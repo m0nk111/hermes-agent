@@ -181,10 +181,10 @@ def test_cancel_run_ignores_terminal_runs(tmp_path):
 
 
 def test_issue_repo_allowlist_uses_safe_default(monkeypatch):
-    """Issue automation should default to the controlled CryptoTrader playground."""
+    """Issue automation should default to a fail-closed empty allowlist."""
     monkeypatch.delenv("HERMES_ISSUE_ALLOWED_REPOS", raising=False)
 
-    assert allowed_issue_repos() == ("m0nklabs/cryptotrader",)
+    assert allowed_issue_repos() == ()
 
 
 @pytest.mark.asyncio
@@ -290,7 +290,7 @@ def test_pr_body_records_issue_run_validation_risk_and_review_contract(tmp_path)
         in body
     )
     assert (
-        "Direct implementation drift on protected CryptoTrader `master`/`main` is forbidden"
+        "Direct implementation drift on protected `m0nklabs/cryptotrader` `master`/`main` branches is forbidden"
         in body
     )
     assert "## Review handoff" in body
@@ -1564,6 +1564,7 @@ async def test_master_expansion_reuses_existing_subissues(tmp_path, monkeypatch)
 @pytest.mark.asyncio
 async def test_managed_repo_guard_blocks_dirty_protected_branch(tmp_path, monkeypatch):
     """CryptoTrader implementation must not start from dirty master/main."""
+    monkeypatch.setenv("HERMES_ISSUE_ALLOWED_REPOS", "m0nklabs/cryptotrader")
     issue = IssueMetadata(
         number=12,
         title="Fix drift",
@@ -1601,6 +1602,7 @@ async def test_managed_repo_guard_allows_only_aider_noise_on_protected_branch(
     tmp_path, monkeypatch
 ):
     """Aider history/cache files are allowed local noise on protected branches."""
+    monkeypatch.setenv("HERMES_ISSUE_ALLOWED_REPOS", "m0nklabs/cryptotrader")
 
     async def fake_run(command, *, cwd=None, env=None, check=True):
         if command == ["git", "branch", "--show-current"]:
@@ -1775,7 +1777,7 @@ def test_local_aider_invocation_targets_guardian(tmp_path):
             "AIDER_BIN": "/opt/aider/bin/aider",
             "AIDER_GUARDIAN_API_KEY": "local-key",
             "GUARDIAN_BASE_URL": "http://host.docker.internal:11434/v1",
-            "KYBERM0NK_ENV": str(tmp_path / "missing.env"),
+            "HERMES_ISSUE_ENV_FILE": str(tmp_path / "missing.env"),
         },
     )
 
@@ -1800,7 +1802,7 @@ def test_cloud_aider_invocation_targets_openrouter(tmp_path):
             "AIDER_BIN": "/opt/aider/bin/aider",
             "OPENROUTER_API_KEY": "cloud-key",
             "OPENAI_API_BASE": "http://127.0.0.1:11434/v1",
-            "KYBERM0NK_ENV": str(tmp_path / "missing.env"),
+            "HERMES_ISSUE_ENV_FILE": str(tmp_path / "missing.env"),
         },
     )
 

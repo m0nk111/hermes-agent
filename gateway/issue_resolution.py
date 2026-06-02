@@ -32,7 +32,7 @@ DEFAULT_REVIEWER_TIER2_MODEL = "openai/gemma4-26b-a4b"
 DEFAULT_REVIEWER_TIER3_MODEL = "openrouter/deepseek/deepseek-v4-pro"
 DEFAULT_CODER_TIER1_MODEL = "openrouter/deepseek/deepseek-v4-flash"
 DEFAULT_CODER_TIER2_MODEL = "openai/qwen-3.6-35b"
-DEFAULT_KYBER_ENV = Path.home() / "kyberm0nk" / ".env"
+DEFAULT_ISSUE_ENV_FILE = get_hermes_home() / "issue-resolution.env"
 DEFAULT_AIDER_BIN = Path.home() / "aider" / ".venv" / "bin" / "aider"
 DEFAULT_STATE_DB = get_hermes_home() / "issue_resolution.db"
 MASTER_PLAN_LABEL = "master-plan"
@@ -40,10 +40,16 @@ MASTER_PLAN_HEADING = "# Master Project Plan"
 ISSUE_RUN_MAX_ATTEMPTS = 3
 ISSUE_RUN_RETRY_DELAYS_SECONDS = (60, 300)
 ISSUE_RUN_IDLE_POLL_SECONDS = 5.0
-DEFAULT_ALLOWED_ISSUE_REPOS = ("m0nklabs/cryptotrader",)
+DEFAULT_ALLOWED_ISSUE_REPOS: tuple[str, ...] = ()
 REVIEW_FINDINGS_MAX_FIX_ATTEMPTS = 2
 REVIEW_TAG_MAX_PARSE_ATTEMPTS = 2
 STRICT_PROTECTED_PUSH_BRANCHES = frozenset({"master", "main"})
+DEFAULT_MANAGED_PROTECTED_BRANCHES = ("master", "main")
+DEFAULT_MANAGED_ALLOWED_DIRTY_PREFIXES = (
+    ".aider.chat.history.md",
+    ".aider.input.history",
+    ".aider.tags.cache.v4/",
+)
 DIRECT_MASTER_PUSH_ERROR = (
     "ERROR: Direct pushes to master are strictly forbidden by operator flip."
 )
@@ -56,20 +62,6 @@ REVIEW_TAG_NEXT_ACTIONS = {
     "ready_for_merge",
 }
 ISSUE_AUTO_MERGE_ENV = "HERMES_ISSUE_AUTO_MERGE_ENABLED"
-MANAGED_REPO_POLICIES = {
-    "m0nklabs/cryptotrader": {
-        "name": "CryptoTrader",
-        "protected_branches": ("master", "main"),
-        "allowed_dirty_prefixes": (
-            ".aider.chat.history.md",
-            ".aider.input.history",
-            ".aider.tags.cache.v4/",
-        ),
-    }
-}
-ISSUE_BRANCH_REPO_SLUGS = {
-    "m0nklabs/cryptotrader": "cryptotrader",
-}
 PR_BODY_VALIDATION_PLACEHOLDER = (
     "Validation is pending. Hermes must update this section before merge after the "
     "local coder and reviewer finish their checks."
@@ -417,11 +409,18 @@ async def cancel_issue_resolution(
 
 def allowed_issue_repos() -> tuple[str, ...]:
     """Return repositories allowed to run issue automation."""
-    configured = os.getenv("HERMES_ISSUE_ALLOWED_REPOS", "").strip()
+    configured = _csv_env_values("HERMES_ISSUE_ALLOWED_REPOS")
     if not configured:
         return DEFAULT_ALLOWED_ISSUE_REPOS
-    repos = tuple(repo.strip() for repo in configured.split(",") if repo.strip())
+    repos = tuple(repo for repo in configured if _valid_repo(repo))
     return repos or DEFAULT_ALLOWED_ISSUE_REPOS
+
+
+def managed_issue_repos() -> tuple[str, ...]:
+    """Return repositories that receive managed protected-branch checks."""
+    configured = _csv_env_values("HERMES_MANAGED_REPOS")
+    repos = tuple(repo for repo in configured if _valid_repo(repo))
+    return repos or allowed_issue_repos()
 
 
 def is_issue_repo_allowed(repo: str) -> bool:
@@ -432,10 +431,42 @@ def is_issue_repo_allowed(repo: str) -> bool:
 def _enforce_issue_repo_allowed(repo: str) -> None:
     if is_issue_repo_allowed(repo):
         return
-    allowed = ", ".join(allowed_issue_repos())
+    allowed = ", ".join(allowed_issue_repos()) or "<none configured>"
     raise RuntimeError(
         f"Hermes issue automation is not allowed for {repo}; allowed repositories: {allowed}"
     )
+
+
+def _csv_env_values(name: str) -> tuple[str, ...]:
+    configured = os.getenv(name, "").strip()
+    if not configured:
+        return ()
+    return tuple(item.strip() for item in configured.split(",") if item.strip())
+
+
+def _repo_slug(repo: str | None) -> str:
+    raw = (repo or "").split("/", 1)[-1].strip().lower()
+    slug = re.sub(r"[^a-z0-9]+", "-", raw).strip("-")
+    return slug or "issue"
+
+
+def _repo_display_name(repo: str) -> str:
+    raw = (repo or "").split("/", 1)[-1]
+    words = [chunk.capitalize() for chunk in re.split(r"[-_.]+", raw) if chunk]
+    return " ".join(words) or (repo or "Repository")
+
+
+def _managed_repo_policy(repo: str) -> dict[str, Any] | None:
+    normalized = (repo or "").casefold()
+    if not normalized:
+        return None
+    if not any(candidate.casefold() == normalized for candidate in managed_issue_repos()):
+        return None
+    return {
+        "name": _repo_display_name(repo),
+        "protected_branches": DEFAULT_MANAGED_PROTECTED_BRANCHES,
+        "allowed_dirty_prefixes": DEFAULT_MANAGED_ALLOWED_DIRTY_PREFIXES,
+    }
 
 
 async def resume_issue_resolution_queue(
@@ -3004,7 +3035,7 @@ async def _assert_issue_branch_ready_for_pr(
 
 async def _inspect_managed_repo(repo: str, workdir: Path) -> ManagedRepoStatus | None:
     """Inspect a configured managed repo without mutating it."""
-    policy = MANAGED_REPO_POLICIES.get(repo.lower())
+    policy = _managed_repo_policy(repo)
     if policy is None:
         return None
 
@@ -3082,7 +3113,7 @@ def _normalize_status_path(line: str) -> str:
 
 def _managed_repo_allowed_dirty_prefixes(repo: str) -> tuple[str, ...]:
     """Return local tool-noise prefixes allowed for a managed repository."""
-    policy = MANAGED_REPO_POLICIES.get(repo.lower())
+    policy = _managed_repo_policy(repo)
     if policy is None:
         return ()
     return tuple(str(value) for value in policy["allowed_dirty_prefixes"])
@@ -3097,7 +3128,7 @@ def _is_allowed_dirty_path(path: str, prefixes: tuple[str, ...]) -> bool:
 
 def _issue_branch_name(issue: IssueMetadata, repo: str | None = None) -> str:
     slug = re.sub(r"[^a-z0-9]+", "-", issue.title.lower()).strip("-")[:48]
-    repo_slug = ISSUE_BRANCH_REPO_SLUGS.get((repo or "").casefold(), "issue")
+    repo_slug = _repo_slug(repo)
     return f"issue/{repo_slug}-{issue.number}-{slug or 'fix'}"
 
 
@@ -3136,7 +3167,7 @@ def _pr_body(
         "## Risk notes\n\n"
         "- Hermes must preserve the issue-to-branch-to-PR-to-review-to-merge discipline.\n"
         "- All implementation changes outside the KyberM0nk framework scope must be submitted through this PR.\n"
-        "- Direct implementation drift on protected CryptoTrader `master`/`main` is forbidden.\n"
+        f"- Direct implementation drift on protected `{repo}` `master`/`main` branches is forbidden.\n"
         "- Merge remains blocked until review output is clean or an explicit audited override is recorded.\n\n"
         "## Review handoff\n\n"
         "- State: `ready_for_review`\n"
@@ -3176,7 +3207,11 @@ def _default_workdir(repo: str) -> Path:
 
 def _merged_runtime_env(runtime_env: dict[str, str] | None = None) -> dict[str, str]:
     env = dict(os.environ if runtime_env is None else runtime_env)
-    env_file = Path(env.get("KYBERM0NK_ENV", str(DEFAULT_KYBER_ENV))).expanduser()
+    env_file = Path(
+        env.get("HERMES_ISSUE_ENV_FILE")
+        or env.get("KYBERM0NK_ENV")
+        or str(DEFAULT_ISSUE_ENV_FILE)
+    ).expanduser()
     for key, value in _read_env_file(env_file).items():
         env.setdefault(key, value)
     _resolve_file_backed_secret(env, "OPENROUTER_API_KEY", "OPENROUTER_API_KEY_FILE")

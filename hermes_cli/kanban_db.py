@@ -4101,18 +4101,12 @@ _RESPAWN_GUARD_PR_URL_RE = re.compile(
     r"https?://github\.com/[^/\s]+/[^/\s]+/pull/\d+",
     re.IGNORECASE,
 )
-
-_MANAGED_DISPATCH_REPOS = {
-    "cryptotrader": {
-        "name": "CryptoTrader",
-        "protected_branches": ("master", "main"),
-        "allowed_dirty_prefixes": (
-            ".aider.chat.history.md",
-            ".aider.input.history",
-            ".aider.tags.cache.v4/",
-        ),
-    }
-}
+_MANAGED_DISPATCH_PROTECTED_BRANCHES = ("master", "main")
+_MANAGED_DISPATCH_ALLOWED_DIRTY_PREFIXES = (
+    ".aider.chat.history.md",
+    ".aider.input.history",
+    ".aider.tags.cache.v4/",
+)
 
 
 @dataclass
@@ -5085,7 +5079,7 @@ def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]
 def check_managed_dispatch_guard(task: Task, *, board: Optional[str] = None) -> Optional[str]:
     """Return a guard reason when a managed repo task must not auto-dispatch."""
     board_slug = (board or get_current_board()).casefold()
-    policy = _MANAGED_DISPATCH_REPOS.get(board_slug)
+    policy = _managed_dispatch_policy(board_slug)
     if policy is None:
         return None
     if task.workspace_kind not in {"dir", "worktree"} or not task.workspace_path:
@@ -5127,7 +5121,44 @@ def check_managed_dispatch_guard(task: Task, *, board: Optional[str] = None) -> 
     if not violating_paths:
         return None
 
-    return "managed_cryptotrader_protected_dirty"
+    return "managed_repo_protected_dirty"
+
+
+def _managed_dispatch_policy(board_slug: str) -> Optional[dict[str, Any]]:
+    normalized = (board_slug or "").casefold()
+    if not normalized:
+        return None
+    if normalized not in _managed_dispatch_boards():
+        return None
+    return {
+        "protected_branches": _MANAGED_DISPATCH_PROTECTED_BRANCHES,
+        "allowed_dirty_prefixes": _MANAGED_DISPATCH_ALLOWED_DIRTY_PREFIXES,
+    }
+
+
+def _managed_dispatch_boards() -> set[str]:
+    configured = os.getenv("HERMES_MANAGED_DISPATCH_BOARDS", "").strip()
+    if configured:
+        return {
+            item.strip().casefold()
+            for item in configured.split(",")
+            if item.strip()
+        }
+
+    managed_repos = os.getenv("HERMES_MANAGED_REPOS", "").strip()
+    if not managed_repos:
+        return set()
+
+    boards: set[str] = set()
+    for item in managed_repos.split(","):
+        repo = item.strip()
+        if not repo:
+            continue
+        tail = repo.split("/", 1)[-1].strip().lower()
+        slug = re.sub(r"[^a-z0-9]+", "-", tail).strip("-")
+        if slug:
+            boards.add(slug.casefold())
+    return boards
 
 
 def _normalize_git_status_path(line: str) -> str:

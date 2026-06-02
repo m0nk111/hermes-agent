@@ -1455,11 +1455,12 @@ def test_dispatch_respawn_guard_emits_event_for_skipped_task(
     assert guarded_evt.payload.get("reason") == "recent_success"
 
 
-def test_dispatch_managed_cryptotrader_guard_blocks_dirty_protected_branch(
+def test_dispatch_managed_repo_guard_blocks_dirty_protected_branch(
     kanban_home, tmp_path, monkeypatch, all_assignees_spawnable
 ):
-    """CryptoTrader board tasks should not claim/spawn from dirty master/main."""
-    repo = tmp_path / "cryptotrader"
+    """Managed board tasks should not claim/spawn from dirty master/main."""
+    monkeypatch.setenv("HERMES_MANAGED_DISPATCH_BOARDS", "alpha")
+    repo = tmp_path / "alpha"
     repo.mkdir()
     spawned_ids = []
 
@@ -1475,34 +1476,35 @@ def test_dispatch_managed_cryptotrader_guard_blocks_dirty_protected_branch(
     with kb.connect() as conn:
         t = kb.create_task(
             conn,
-            title="ship CryptoTrader change",
+            title="ship managed repo change",
             assignee="alice",
             workspace_kind="dir",
             workspace_path=str(repo),
-            board="cryptotrader",
+            board="alpha",
         )
         res = kb.dispatch_once(
             conn,
-            board="cryptotrader",
+            board="alpha",
             spawn_fn=lambda task, ws: spawned_ids.append(task.id),
         )
         task = kb.get_task(conn, t)
         events = kb.list_events(conn, t)
 
-    assert (t, "managed_cryptotrader_protected_dirty") in res.managed_guarded
+    assert (t, "managed_repo_protected_dirty") in res.managed_guarded
     assert spawned_ids == []
     assert task.status == "ready"
     assert task.claim_lock is None
     guarded_evt = next(e for e in events if e.kind == "managed_dispatch_guarded")
     assert isinstance(guarded_evt.payload, dict)
-    assert guarded_evt.payload.get("reason") == "managed_cryptotrader_protected_dirty"
+    assert guarded_evt.payload.get("reason") == "managed_repo_protected_dirty"
 
 
-def test_dispatch_managed_cryptotrader_guard_allows_aider_noise(
+def test_dispatch_managed_repo_guard_allows_aider_noise(
     kanban_home, tmp_path, monkeypatch, all_assignees_spawnable
 ):
     """Aider history/cache files are allowed local noise on protected branches."""
-    repo = tmp_path / "cryptotrader"
+    monkeypatch.setenv("HERMES_MANAGED_DISPATCH_BOARDS", "alpha")
+    repo = tmp_path / "alpha"
     repo.mkdir()
     spawned_ids = []
 
@@ -1523,15 +1525,15 @@ def test_dispatch_managed_cryptotrader_guard_allows_aider_noise(
     with kb.connect() as conn:
         t = kb.create_task(
             conn,
-            title="resume CryptoTrader lane",
+            title="resume managed lane",
             assignee="alice",
             workspace_kind="dir",
             workspace_path=str(repo),
-            board="cryptotrader",
+            board="alpha",
         )
         res = kb.dispatch_once(
             conn,
-            board="cryptotrader",
+            board="alpha",
             spawn_fn=lambda task, ws: spawned_ids.append(task.id),
         )
         task = kb.get_task(conn, t)
@@ -1573,10 +1575,11 @@ def test_dispatch_managed_guard_skips_unmanaged_board(
     assert t in spawned_ids
 
 
-def test_dispatch_managed_cryptotrader_guard_ignores_scratch_tasks(
+def test_dispatch_managed_repo_guard_ignores_scratch_tasks(
     kanban_home, monkeypatch, all_assignees_spawnable
 ):
     """Scratch workspaces must not be interpreted as the managed source checkout."""
+    monkeypatch.setenv("HERMES_MANAGED_DISPATCH_BOARDS", "alpha")
     spawned_ids = []
 
     def fake_run(*args, **kwargs):
@@ -1587,14 +1590,14 @@ def test_dispatch_managed_cryptotrader_guard_ignores_scratch_tasks(
     with kb.connect() as conn:
         t = kb.create_task(
             conn,
-            title="scratch CryptoTrader task",
+            title="scratch managed task",
             assignee="alice",
             workspace_kind="scratch",
-            board="cryptotrader",
+            board="alpha",
         )
         res = kb.dispatch_once(
             conn,
-            board="cryptotrader",
+            board="alpha",
             spawn_fn=lambda task, ws: spawned_ids.append(task.id),
         )
 
